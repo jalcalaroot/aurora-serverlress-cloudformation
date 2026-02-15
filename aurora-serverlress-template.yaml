@@ -1,0 +1,1032 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create an Aurora DB Cluster (serverless)
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: Configuraciones de la soluci?n
+        Parameters:
+          - pPrefix
+          - pSubnets
+          - pClusterId
+          - pDBName
+          - pDBSecretName
+          - pDBEngine
+          - pEngineVersion
+          - pMasterUsername
+          - pDBPassSecret
+          - pMinCapacity
+          - pMaxCapacity
+  
+      -
+        Label:
+          default: Tags para recursos
+        Parameters:
+          - pTagValueApps
+          - pTagValueTechOwner
+          - pTagValueEnvironment
+          - pTagValueMaintenanceWindow
+          - pTagValueProject
+          - pTagValueName
+          - pTagValueBackupDaily
+          - pTagValueBackupWeekly
+          - pTagValueBackupMonthly
+          - pTagValueSchedule
+          - pTagValueAvailability
+          - pTagValueCriticity
+          - pTagValueArchitectureType
+          - pTagValueCostCenter
+
+    ParameterLabels:
+      pPrefix:
+        default: Prefix name resources account associate.
+      pSubnets:
+        default: Type of subnets, could be private or public.
+      pTagValueApps:
+        default: workload:apps
+      pTagValueTechOwner:
+        default: workload:tech-owner
+      pTagValueEnvironment:
+        default: workload:environment
+      pTagValueCostCenter:
+        default: workload:cost-center
+      pTagValueBussOwner:
+        default: workload:buss-owner
+      pTagValueMaintenanceWindow:
+        default: workload:maintenance-window
+      pTagValueProject:
+        default: workload:project
+      pTagValueName:
+        default: Name
+      pTagValueBackupDaily:
+        default: automation:aws-backup-daily
+      pTagValueBackupWeekly:
+        default: automation:aws-backup-weekly
+      pTagValueBackupMonthly:
+        default: automation:aws-backup-monthly 
+      pTagValueSchedule:
+        default: automation:schedule
+      pTagValueAvailability:
+        default: security:availability
+      pTagValueCriticity:
+        default: security:criticity
+      pTagValueArchitectureType:
+        default: sn:architecture-type
+
+Parameters:
+  pPrefix:
+    Description: Prefix name resources account associate
+    Type: String
+    Default: "account"
+
+  VPCId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: "/vpc/id"
+    Description: SSM Parameter for VPC id
+
+  VPCCidr:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: "/vpc/cidr"
+    Description: SSM Parameter for VPC CIDR
+
+  pSourcePrefixListId:
+    Type: String
+    Description: Prefix List Id
+
+  pSubnets:
+    Description: Subnets to be used by the Application Load Balancer
+    Type: String
+    Default: "internal"
+    AllowedValues:
+      - "private"
+      - "internal"
+
+  pLambdaSubnets:
+    Description: Subnets to be used by the Lambda which create usernames in RDS
+    Type: String
+    Default: "private"
+    AllowedValues:
+      - "private"
+      - "internal"  
+
+  SubnetsPrivate:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: "/vpc/subnets/private/ids"
+    Description: SSM Parameter for private subnets as a comma-separated string
+
+  SubnetsInternal:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: "/vpc/subnets/internal/ids"
+    Description: SSM Parameter for internal subnets as a comma-separated string
+
+  pDBName:
+    Description: Name of the new database
+    Type: String
+
+  pClusterId:
+    Description: DB Cluster Identifier
+    Type: String
+
+  pInstanceId:
+    Description: DB Instance Identifier
+    Type: String
+
+  pROInstanceId:
+    Description: DB ROInstance Identifier
+    Type: String
+    Default: "reader-instance"
+
+  pNeedsReplica:
+    Description: Enables Replica Creation
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+
+  pNeedsRDSProxy:
+    Description: Enables RDS Proxy Creation
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+
+  pRDSProxyIAMAuth:
+    Description: Enable / Disable IAM Auth for RDS Proxy
+    Type: String
+    AllowedValues: [true, false]
+    Default: true
+
+  pDBSecretName:
+    Description: Secret name for the master user password
+    Type: String
+  
+  pDBEngine:
+    Description: DB engine
+    Type: String
+    #Default: aurora-postgres
+
+  pEngineVersion:
+    Description: Engine Version
+    Type: String
+    #Default: '14.0'
+
+  pMasterUsername:
+    Description: Master DB User name
+    Type: String
+    Default: adminuser
+
+  pAppUsername:
+    Description: Application DB User name
+    Type: String
+    Default: appuser
+
+  pIAMUsername:
+    Description: IAM Auth DB User name
+    Type: String
+    Default: iamuser
+
+  pMinCapacity:
+    Description: Minimum Aurora Capacity Unit (ACU) for Serverless
+    Type: String
+    Default: 2
+
+  pMaxCapacity:
+    Description: Maximum Aurora Capacity Unit (ACU) for Serverless
+    Type: String
+    Default: 8
+
+  pEnableHttpEndpoint:
+    Description: Enable HTTP endpoint
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+
+  pRoleCrossAccount:
+    Description: Role ARN to be able to assumed rdsproxyrole to connect to the RDS Proxy from another account
+    Type: String
+    Default: ""
+
+  pLambdaBucket:
+    Description: S3 Bucket where the Lambda code is located
+    Type: String  
+
+#tags
+  pTagValueApps:
+    Type: String
+    Description: Este es el valor de tag para 'workload:apps'
+    Default: "rds-cluster"
+  pTagValueTechOwner:
+    Type: String
+    Description: Este es el valor de tag para 'workload:tech-owner'
+    AllowedPattern: ([a-zA-Z0-9_\-\.\+]+)@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.)|(([a-zA-Z0-9\-]+\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\]?)
+    ConstraintDescription: Debe ser una direccion de correo valida
+  pTagValueEnvironment:
+    Type: String
+    Description: Este es el valor de tag para 'workload:environment'
+    AllowedValues:
+      - "dev"
+      - "qa"
+      - "prod"
+      - "sandbox"
+  pTagValueBussOwner:
+    Type: String
+    Description: Este es el valor de tag para 'workload:buss-owner'
+    AllowedPattern: ([a-zA-Z0-9_\-\.\+]+)@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.)|(([a-zA-Z0-9\-]+\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\]?)
+    ConstraintDescription: Dee ser una direccion de correo valida     
+  pTagValueMaintenanceWindow:
+    Type: String
+    Description: Este es el valor de tag para 'workload:maintenance-window'
+    Default: "l-v-23:00-03:00"
+  pTagValueProject:
+    Type: String
+    Description: Este es el valor de tag para 'workload:project'
+    Default: "rds-cluster"
+  pTagValueName:
+    Type: String
+    Description: Este es el valor de tag para 'Name'
+    Default: ""
+  pTagValueBackupDaily:
+    Type: String
+    Description: Este es el valor de tag para 'automation:aws-backup-daily'
+    AllowedValues:
+      - "yes"
+      - "no"
+    Default: "yes"
+  pTagValueBackupWeekly:
+    Type: String
+    Description: Este es el valor de tag para 'automation:aws-backup-weekly'
+    AllowedValues:
+      - "yes"
+      - "no"
+    Default: "yes"
+  pTagValueBackupMonthly:
+    Type: String
+    Description: Este es el valor de tag para 'automation:aws-backup-monthly'
+    AllowedValues:
+      - "yes"
+      - "no"
+    Default: "no"
+  pTagValueSchedule:
+    Type: String
+    Description: Este es el valor de tag para 'automation:schedule'
+    Default: "no"
+  pTagValueAvailability:
+    Type: String
+    Description: Este es el valor de tag para 'security:availability'
+    AllowedValues:
+      - "vital"
+      - "sensible"
+      - "relevante"
+      - "normal"
+      - "estandar"
+      - "n/a"
+    Default: "relevante"
+  pTagValueCriticity:
+    Type: String
+    Description: Este es el valor de tag para 'security:criticity'
+    AllowedValues:
+      - "critico"
+      - "alto"
+      - "medio"
+      - "minimo"
+      - "insignificante"
+    Default: "medio"
+  pTagValueArchitectureType:
+    Type: String
+    Description: Este es el valor de tag para 'sn:architecture-type'
+    AllowedValues:
+      - "sas"
+      - "cots"
+      - "home-grown"
+    Default: "sas"
+  pTagValueCostCenter:
+    Type: Number
+    Description: Este es el valor de tag para 'workload:cost-center'.
+    Default: "179" 
+
+Conditions:
+  IsPrivate:
+    Fn::Equals: [ !Ref pSubnets, private ]
+  IsInternal:
+    Fn::Equals: [ !Ref pSubnets, internal ]
+  IsAuroraMySQL:
+    Fn::Equals: [ !Ref pDBEngine, aurora-mysql ]
+  IsPostgresql:
+    Fn::Equals: [ !Ref pDBEngine, aurora-postgresql ]
+  RequireReplicas:
+    Fn::Equals: [ !Ref pNeedsReplica, true ]
+  RequireRDSProxy:
+    Fn::Equals: [ !Ref pNeedsRDSProxy, true ]
+  EnableRDSProxyIAMAuth:
+    Fn::Equals: [ !Ref pRDSProxyIAMAuth, true ]
+  IsLambdaPrivate:
+    Fn::Equals: [ !Ref pLambdaSubnets, private ]
+  IsLambdaInternal:
+    Fn::Equals: [ !Ref pLambdaSubnets, internal ]
+  RequirePolicyCrossAccount: !Not [ !Equals [ !Ref pRoleCrossAccount, "" ] ]   
+
+
+Resources:
+
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Ref pDBSecretName
+      Description: !Sub 'Secret to store RDS ${pClusterId} adminuser credentials'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "adminuser"}'
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter          
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner          
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Ref pTagValueName
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+        - Key: "automation:aws-backup-daily"
+          Value: !Ref pTagValueBackupDaily
+        - Key: "automation:aws-backup-weekly"
+          Value: !Ref pTagValueBackupWeekly
+        - Key: "automation:aws-backup-monthly"
+          Value: !Ref pTagValueBackupMonthly
+
+  AuroraDBCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn: 
+      - AuroraSecurityGroup
+      - AuroraDBSubnetGroup
+    Properties:
+      DBClusterIdentifier: !Ref pClusterId
+      CopyTagsToSnapshot: true
+      Engine: !Ref pDBEngine
+      EngineVersion: !Ref pEngineVersion
+      Port: !If
+        - IsAuroraMySQL
+        - 3306
+        - 5432
+      BackupRetentionPeriod: 7
+      EnableHttpEndpoint: !Ref pEnableHttpEndpoint
+      EngineMode: "provisioned"
+      DatabaseName: !Ref pDBName
+      MasterUsername: !Ref pMasterUsername
+      ManageMasterUserPassword: false
+      MasterUserSecret:
+        SecretArn: !Ref RDSSecret
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${RDSSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref AuroraDBSubnetGroup 
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref pMinCapacity
+        MaxCapacity: !Ref pMaxCapacity
+      DeletionProtection: true
+      EnableCloudwatchLogsExports: !If
+        - IsAuroraMySQL
+        - [error, general, slowquery]
+        - [postgresql]
+      #EnableCloudwatchLogsExports: [error, general, slowquery]
+      StorageEncrypted: true
+      AutoMinorVersionUpgrade: true
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:tech-owner"
+          Value: !Ref pTagValueTechOwner
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter          
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner          
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Ref pTagValueName
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+        - Key: "automation:aws-backup-daily"
+          Value: !Ref pTagValueBackupDaily
+        - Key: "automation:aws-backup-weekly"
+          Value: !Ref pTagValueBackupWeekly
+        - Key: "automation:aws-backup-monthly"
+          Value: !Ref pTagValueBackupMonthly
+
+  AuroraRDSDBInstance:
+      Type: 'AWS::RDS::DBInstance'
+      Properties:
+        Engine: !Ref pDBEngine
+        DBInstanceIdentifier: !Ref pInstanceId
+        DBInstanceClass: db.serverless
+        DBClusterIdentifier: !Ref AuroraDBCluster
+        Tags:
+          - Key: "workload:apps"
+            Value: !Ref pTagValueApps
+          - Key: "workload:tech-owner"
+            Value: !Ref pTagValueTechOwner
+          - Key: "workload:cost-center"
+            Value: !Ref pTagValueCostCenter          
+          - Key: "workload:environment"
+            Value: !Ref pTagValueEnvironment
+          - Key: "workload:buss-owner"
+            Value: !Ref pTagValueBussOwner          
+          - Key: "workload:maintenance-window"
+            Value: !Ref pTagValueMaintenanceWindow
+          - Key: "workload:project"
+            Value: !Ref pTagValueProject
+          - Key: "Name"
+            Value: !Ref pTagValueName
+          - Key: "automation:schedule"
+            Value: !Ref pTagValueSchedule
+          - Key: "security:availability"
+            Value: !Ref pTagValueAvailability
+          - Key: "security:criticity"
+            Value: !Ref pTagValueCriticity
+          - Key: "sn:architecture-type"
+            Value: !Ref pTagValueArchitectureType
+          - Key: "automation:aws-backup-daily"
+            Value: !Ref pTagValueBackupDaily
+          - Key: "automation:aws-backup-weekly"
+            Value: !Ref pTagValueBackupWeekly
+          - Key: "automation:aws-backup-monthly"
+            Value: !Ref pTagValueBackupMonthly
+            
+  AuroraRDSDBROInstance:
+      Type: 'AWS::RDS::DBInstance'
+      Condition: RequireReplicas
+      DependsOn:
+      - AuroraRDSDBInstance
+      Properties:
+        Engine: !Ref pDBEngine
+        DBInstanceIdentifier: !Ref pROInstanceId
+        DBInstanceClass: db.serverless
+        DBClusterIdentifier: !Ref AuroraDBCluster
+        Tags:
+          - Key: "workload:apps"
+            Value: !Ref pTagValueApps
+          - Key: "workload:tech-owner"
+            Value: !Ref pTagValueTechOwner
+          - Key: "workload:cost-center"
+            Value: !Ref pTagValueCostCenter          
+          - Key: "workload:environment"
+            Value: !Ref pTagValueEnvironment
+          - Key: "workload:buss-owner"
+            Value: !Ref pTagValueBussOwner          
+          - Key: "workload:maintenance-window"
+            Value: !Ref pTagValueMaintenanceWindow
+          - Key: "workload:project"
+            Value: !Ref pTagValueProject
+          - Key: "Name"
+            Value: !Ref pTagValueName
+          - Key: "automation:schedule"
+            Value: !Ref pTagValueSchedule
+          - Key: "security:availability"
+            Value: !Ref pTagValueAvailability
+          - Key: "security:criticity"
+            Value: !Ref pTagValueCriticity
+          - Key: "sn:architecture-type"
+            Value: !Ref pTagValueArchitectureType
+          - Key: "automation:aws-backup-daily"
+            Value: !Ref pTagValueBackupDaily
+          - Key: "automation:aws-backup-weekly"
+            Value: !Ref pTagValueBackupWeekly
+          - Key: "automation:aws-backup-monthly"
+            Value: !Ref pTagValueBackupMonthly
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ['-', [!Ref pClusterId, 'DBSecG']]
+      GroupDescription: Enable access to Aurora MySQL DB cluster
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - !If
+          - IsAuroraMySQL
+          - IpProtocol: tcp
+            FromPort: '3306'
+            ToPort: '3306'
+            CidrIp: !Ref VPCCidr
+          - IpProtocol: tcp
+            FromPort: '5432'
+            ToPort: '5432'
+            CidrIp: !Ref VPCCidr
+        - !If                
+          - IsAuroraMySQL
+          - IpProtocol: tcp
+            FromPort: '3306'
+            ToPort: '3306'
+            SourcePrefixListId: !Ref pSourcePrefixListId
+            Description: 'Acceso desde la VPN'
+          - IpProtocol: tcp
+            FromPort: '5432'
+            ToPort: '5432'
+            SourcePrefixListId: !Ref pSourcePrefixListId
+            Description: 'Acceso desde la VPN'            
+
+  AuroraDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Aurora DB Subnet Group"
+      DBSubnetGroupName: !Join ['-', [!Ref pClusterId, 'DBSnetG']]
+      SubnetIds: !If
+        - IsPrivate
+        - !Split [ ",", !Ref SubnetsPrivate ]
+        - !If
+          - IsInternal
+          - !Split [ ",", !Ref SubnetsInternal ]
+          - !Ref "AWS::NoValue"
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Join ['-', [!Ref pPrefix, 'DBSG']]
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+
+############################## BEGIN RDS PROXY RESOURCES ##############################
+  RDSDBProxyRole:
+    Condition: RequireRDSProxy
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: !If
+          - RequirePolicyCrossAccount 
+          - 
+            - Effect: Allow
+              Principal:
+                AWS: !Ref pRoleCrossAccount
+              Action:
+                - "sts:AssumeRole"
+            - Effect: Allow
+              Principal:
+                Service:
+                  - "rds.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+          - 
+            - Effect: Allow
+              Principal:
+                Service:
+                  - "rds.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"                                
+      Description: "RDS DB Proxy Role"
+      Policies:
+        - PolicyName: "AdditionalPermissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "secretsmanager:GetResourcePolicy"
+                  - "secretsmanager:GetSecretValue"
+                  - "secretsmanager:DescribeSecret"
+                  - "secretsmanager:ListSecretVersionIds"
+                Resource: !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - "secretsmanager:GetResourcePolicy"
+                  - "secretsmanager:GetSecretValue"
+                  - "secretsmanager:DescribeSecret"
+                  - "secretsmanager:ListSecretVersionIds"
+                Resource: !Ref AppUserRDSSecret  
+              - Effect: Allow
+                Action:
+                  - "secretsmanager:GetResourcePolicy"
+                  - "secretsmanager:GetSecretValue"
+                  - "secretsmanager:DescribeSecret"
+                  - "secretsmanager:ListSecretVersionIds"
+                Resource: !Ref IAMAppUserRDSSecret                                          
+      RoleName: !Sub '${pClusterId}-RDSProxyRole'
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Join ['-', [!Ref pPrefix, 'DBSG']]
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType      
+
+  RDSDBProxy:
+    Condition: RequireRDSProxy
+    Type: AWS::RDS::DBProxy
+    Properties: 
+      Auth: !If
+        - EnableRDSProxyIAMAuth
+        -
+          - AuthScheme: SECRETS
+            IAMAuth: REQUIRED
+            SecretArn: !Ref IAMAppUserRDSSecret
+        - 
+          - AuthScheme: SECRETS
+            IAMAuth: DISABLED
+            SecretArn: !Ref AppUserRDSSecret       
+      DBProxyName: !Sub '${pClusterId}-RDSProxy'
+      DebugLogging: true
+      EngineFamily: POSTGRESQL
+      RequireTLS: true
+      RoleArn: !GetAtt RDSDBProxyRole.Arn
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      VpcSubnetIds: !Split [ ",", !Ref SubnetsInternal ]
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Join ['-', [!Ref pPrefix, 'DBSG']]
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType       
+
+  RDSDBProxyTargetGroup:
+    Condition: RequireRDSProxy
+    Type: AWS::RDS::DBProxyTargetGroup
+    Properties:
+      DBProxyName: !Ref RDSDBProxy
+      TargetGroupName: default
+      DBClusterIdentifiers:
+        - !Ref AuroraDBCluster
+    DependsOn:
+      - AuroraRDSDBInstance
+
+############################## END RDS PROXY RESOURCES ##############################
+
+############################## BEGIN RDS APP USER CREATION ##############################
+
+  AppUserRDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'rds-${pDBName}-${pAppUsername}-secret'
+      Description: !Sub 'Secret to store RDS ${pClusterId} {pAppUsername} user credentials. This user is going to connect with user/pass to the DB'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${pAppUsername}"}'
+        GenerateStringKey: "password"
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter          
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner          
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Ref pTagValueName
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+        - Key: "automation:aws-backup-daily"
+          Value: !Ref pTagValueBackupDaily
+        - Key: "automation:aws-backup-weekly"
+          Value: !Ref pTagValueBackupWeekly
+        - Key: "automation:aws-backup-monthly"
+          Value: !Ref pTagValueBackupMonthly
+
+  IAMAppUserRDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: EnableRDSProxyIAMAuth
+    Properties:
+      Name: !Sub 'rds-${pDBName}-${pIAMUsername}-secret'
+      Description: !Sub 'Secret to store RDS ${pClusterId} {pIAMUsername} user credentials. This user is going to connect with IAM auth to the DB'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${pIAMUsername}"}'
+        GenerateStringKey: "password"
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter          
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner          
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Ref pTagValueName
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+        - Key: "automation:aws-backup-daily"
+          Value: !Ref pTagValueBackupDaily
+        - Key: "automation:aws-backup-weekly"
+          Value: !Ref pTagValueBackupWeekly
+        - Key: "automation:aws-backup-monthly"
+          Value: !Ref pTagValueBackupMonthly          
+
+  DbUserLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${pClusterId}-DbUser-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies: !If
+        - EnableRDSProxyIAMAuth
+        -
+          - PolicyName: SecretsAndNet
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - secretsmanager:GetSecretValue
+                    - secretsmanager:DescribeSecret
+                  Resource:
+                    - !Ref RDSSecret
+                    - !Ref AppUserRDSSecret
+                    - !Ref IAMAppUserRDSSecret
+                - Effect: Allow
+                  Action:
+                    - ec2:CreateNetworkInterface
+                    - ec2:DescribeNetworkInterfaces
+                    - ec2:DeleteNetworkInterface
+                  Resource: "*"
+        -
+          - PolicyName: SecretsAndNet
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - secretsmanager:GetSecretValue
+                    - secretsmanager:DescribeSecret
+                  Resource:
+                    - !Ref RDSSecret
+                    - !Ref AppUserRDSSecret
+                - Effect: Allow
+                  Action:
+                    - ec2:CreateNetworkInterface
+                    - ec2:DescribeNetworkInterfaces
+                    - ec2:DeleteNetworkInterface
+                  Resource: "*"                
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter          
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner          
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "Name"
+          Value: !Ref pTagValueName
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+        - Key: "automation:aws-backup-daily"
+          Value: !Ref pTagValueBackupDaily
+        - Key: "automation:aws-backup-weekly"
+          Value: !Ref pTagValueBackupWeekly
+        - Key: "automation:aws-backup-monthly"
+          Value: !Ref pTagValueBackupMonthly
+
+  CreateDbUserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${pClusterId}-CreateDbUser'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt DbUserLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref AuroraSecurityGroup
+        SubnetIds: !If
+          - IsLambdaPrivate
+          - !Split [ ",", !Ref SubnetsPrivate ]
+          - !If
+            - IsLambdaInternal
+            - !Split [ ",", !Ref SubnetsInternal ]
+            - !Ref "AWS::NoValue"         
+      Tags:
+        - Key: "workload:apps"
+          Value: !Ref pTagValueApps
+        - Key: "workload:cost-center"
+          Value: !Ref pTagValueCostCenter          
+        - Key: "workload:environment"
+          Value: !Ref pTagValueEnvironment
+        - Key: "workload:buss-owner"
+          Value: !Ref pTagValueBussOwner          
+        - Key: "workload:maintenance-window"
+          Value: !Ref pTagValueMaintenanceWindow
+        - Key: "workload:project"
+          Value: !Ref pTagValueProject
+        - Key: "workload:tech-owner"
+          Value: !Ref pTagValueTechOwner          
+        - Key: "Name"
+          Value: !Ref pTagValueName
+        - Key: "automation:schedule"
+          Value: !Ref pTagValueSchedule
+        - Key: "security:availability"
+          Value: !Ref pTagValueAvailability
+        - Key: "security:criticity"
+          Value: !Ref pTagValueCriticity
+        - Key: "sn:architecture-type"
+          Value: !Ref pTagValueArchitectureType
+        - Key: "automation:aws-backup-daily"
+          Value: !Ref pTagValueBackupDaily
+        - Key: "automation:aws-backup-weekly"
+          Value: !Ref pTagValueBackupWeekly
+        - Key: "automation:aws-backup-monthly"
+          Value: !Ref pTagValueBackupMonthly        
+      Code:
+        S3Bucket: !Ref pLambdaBucket #sandbox-sandbox-infra-bucket
+        S3Key: create-db-user.zip
+
+  CreateAppUser:
+    Type: Custom::CreateDbUser
+    DependsOn:
+      - AuroraRDSDBInstance   # ensures writer is up; keep if you also create a RO instance
+    Properties:
+      ServiceToken: !GetAtt CreateDbUserFunction.Arn
+      DBEndpoint: !GetAtt AuroraDBCluster.Endpoint.Address
+      DBPort: !GetAtt AuroraDBCluster.Endpoint.Port
+      DBName: !Ref pDBName
+      AdminSecretArn: !Ref RDSSecret
+      AppSecretArn: !Ref AppUserRDSSecret
+      IAMAppSecretArn: !If
+        - EnableRDSProxyIAMAuth
+        - !Ref IAMAppUserRDSSecret
+        - !Sub ""
+      GrantsSQL: !If
+      - EnableRDSProxyIAMAuth
+      - !Sub |
+        GRANT CONNECT ON DATABASE "${pDBName}" TO "${pAppUsername}";
+        ALTER ROLE "${pAppUsername}" IN DATABASE "${pDBName}" SET search_path = public;
+        GRANT USAGE ON SCHEMA public TO "${pAppUsername}";
+        GRANT ALL PRIVILEGES ON DATABASE "${pDBName}" TO "${pAppUsername}";
+        GRANT ALL ON SCHEMA public TO "${pAppUsername}";        
+        GRANT CONNECT ON DATABASE "${pDBName}" TO "${pIAMUsername}";
+        ALTER ROLE "${pIAMUsername}" IN DATABASE "${pDBName}" SET search_path = public;
+        GRANT USAGE ON SCHEMA public TO "${pIAMUsername}";
+        GRANT ALL PRIVILEGES ON DATABASE "${pDBName}" TO "${pIAMUsername}";
+        GRANT ALL ON SCHEMA public TO "${pIAMUsername}";
+      - !Sub |
+        GRANT CONNECT ON DATABASE "${pDBName}" TO "${pAppUsername}";
+        ALTER ROLE "${pAppUsername}" IN DATABASE "${pDBName}" SET search_path = public;
+        GRANT USAGE ON SCHEMA public TO "${pAppUsername}";
+        GRANT ALL PRIVILEGES ON DATABASE "${pDBName}" TO "${pAppUsername}";
+        GRANT ALL ON SCHEMA public TO "${pAppUsername}";                             
+
+
+############################## END RDS APP USER CREATION ##############################
+
+  AuroraDBEndpointParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rds/${pDBName}/endpoint
+      Type: String
+      Value: !GetAtt AuroraDBCluster.Endpoint.Address
+      Description: "Aurora DB Cluster endpoint"
+    DependsOn:
+    - AuroraRDSDBInstance
+
+  AuroraRDSProxyEndpointParameter:
+    Condition: RequireRDSProxy
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rdsproxy/${pDBName}/endpoint
+      Type: String
+      Value: !GetAtt RDSDBProxy.Endpoint
+      Description: "Aurora DB Cluster endpoint"
+    DependsOn:
+    - AuroraRDSDBInstance    
+
+  AuroraDBPortParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rds/${pDBName}/port
+      Type: String
+      Value: !GetAtt AuroraDBCluster.Endpoint.Port
+      Description: "Aurora DB Cluster port"
+    DependsOn:
+    - AuroraRDSDBInstance
+
+  DBPassSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rds/${pDBName}/passdbsecretarn
+      Type: String
+      Value: !GetAtt RDSSecret.Id
+      Description: "Aurora DB Cluster password secret ARN"
+    DependsOn:
+    - AuroraRDSDBInstance
+
+  RDSProxyRoleArn:
+    Condition: RequireRDSProxy
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /rds/${pDBName}/rdsproxyrolearn
+      Type: String
+      Value: !GetAtt RDSDBProxyRole.Arn
+      Description: "RDS Proxy Role ARN"
+    DependsOn:
+    - RDSDBProxyRole     
